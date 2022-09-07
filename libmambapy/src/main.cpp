@@ -9,6 +9,7 @@
 #include <pybind11/stl.h>
 
 #include "nlohmann/json.hpp"
+#include "spdlog/fmt/fmt.h"
 
 #include "mamba/api/clean.hpp"
 #include "mamba/api/configuration.hpp"
@@ -49,15 +50,15 @@ PYBIND11_MODULE(bindings, m)
 {
     using namespace mamba;
 
-    py::class_<fs::path>(m, "Path")
+    py::class_<fs::u8path>(m, "Path")
         .def(py::init<std::string>())
-        .def("__str__", [](fs::path& self) -> std::string { return self.string(); })
+        .def("__str__", [](fs::u8path& self) -> std::string { return self.string(); })
         .def("__repr__",
-             [](fs::path& self) -> std::string
-             { return std::string("fs::path[") + std::string(self) + "]"; });
-    py::implicitly_convertible<std::string, fs::path>();
+             [](fs::u8path& self) -> std::string
+             { return fmt::format("fs::u8path[{}]", self.string()); });
+    py::implicitly_convertible<std::string, fs::u8path>();
 
-    py::class_<mamba::LockFile>(m, "LockFile").def(py::init<fs::path>());
+    py::class_<mamba::LockFile>(m, "LockFile").def(py::init<fs::u8path>());
 
     py::register_exception<mamba_error>(m, "MambaNativeException");
 
@@ -67,13 +68,12 @@ PYBIND11_MODULE(bindings, m)
         .def(py::init<>())
         .def("set_debuglevel", &MPool::set_debuglevel)
         .def("create_whatprovides", &MPool::create_whatprovides)
-        .def("select_solvables", &MPool::select_solvables)
-        .def("matchspec2id", &MPool::matchspec2id)
-        .def("id2pkginfo",
-             [](MPool& self, Id id) { return PackageInfo(pool_id2solvable(self, id)); });
+        .def("select_solvables", &MPool::select_solvables, py::arg("id"))
+        .def("matchspec2id", &MPool::matchspec2id, py::arg("ms"))
+        .def("id2pkginfo", &MPool::id2pkginfo, py::arg("id"));
 
     py::class_<MultiPackageCache>(m, "MultiPackageCache")
-        .def(py::init<std::vector<fs::path>>())
+        .def(py::init<std::vector<fs::u8path>>())
         .def("get_tarball_path", &MultiPackageCache::get_tarball_path)
         .def_property_readonly("first_writable_path", &MultiPackageCache::first_writable_path);
 
@@ -155,17 +155,17 @@ PYBIND11_MODULE(bindings, m)
         .def("solve", &MSolver::solve);
 
     py::class_<MSolverProblem>(m, "SolverProblem")
-        .def_readonly("target_id", &MSolverProblem::target_id)
-        .def_readonly("source_id", &MSolverProblem::source_id)
-        .def_readonly("dep_id", &MSolverProblem::dep_id)
-        .def_readonly("type", &MSolverProblem::type)
+        .def_readwrite("target_id", &MSolverProblem::target_id)
+        .def_readwrite("source_id", &MSolverProblem::source_id)
+        .def_readwrite("dep_id", &MSolverProblem::dep_id)
+        .def_readwrite("type", &MSolverProblem::type)
         .def("__str__", &MSolverProblem::to_string)
         .def("target", &MSolverProblem::target)
         .def("source", &MSolverProblem::source)
         .def("dep", &MSolverProblem::dep);
 
     py::class_<History>(m, "History")
-        .def(py::init<const fs::path&>())
+        .def(py::init<const fs::u8path&>())
         .def("get_requested_specs_map", &History::get_requested_specs_map);
 
     py::class_<MatchSpec>(m, "MatchSpec")
@@ -342,7 +342,7 @@ PYBIND11_MODULE(bindings, m)
 
     py::class_<PrefixData>(m, "PrefixData")
         .def(py::init(
-            [](const fs::path& prefix_path) -> PrefixData
+            [](const fs::u8path& prefix_path) -> PrefixData
             {
                 auto sres = PrefixData::create(prefix_path);
                 if (sres.has_value())
@@ -359,8 +359,12 @@ PYBIND11_MODULE(bindings, m)
 
     py::class_<PackageInfo>(m, "PackageInfo")
         .def(py::init<Solvable*>())
-        .def(py::init<const std::string&>())
-        .def(py::init<const std::string&, const std::string&, const std::string&, std::size_t>())
+        .def(py::init<const std::string&>(), py::arg("name"))
+        .def(py::init<const std::string&, const std::string&, const std::string&, std::size_t>(),
+             py::arg("name"),
+             py::arg("version"),
+             py::arg("build_string"),
+             py::arg("build_number"))
         .def_readwrite("name", &PackageInfo::name)
         .def_readwrite("version", &PackageInfo::version)
         .def_readwrite("build_string", &PackageInfo::build_string)
@@ -606,6 +610,8 @@ PYBIND11_MODULE(bindings, m)
                SolverRuleinfo::SOLVER_RULE_PKG_IMPLICIT_OBSOLETES)
         .value("SOLVER_RULE_PKG_INSTALLED_OBSOLETES",
                SolverRuleinfo::SOLVER_RULE_PKG_INSTALLED_OBSOLETES)
+        .value("SOLVER_RULE_PKG_RECOMMENDS", SolverRuleinfo::SOLVER_RULE_PKG_RECOMMENDS)
+        .value("SOLVER_RULE_PKG_CONSTRAINS", SolverRuleinfo::SOLVER_RULE_PKG_CONSTRAINS)
         .value("SOLVER_RULE_UPDATE", SolverRuleinfo::SOLVER_RULE_UPDATE)
         .value("SOLVER_RULE_FEATURE", SolverRuleinfo::SOLVER_RULE_FEATURE)
         .value("SOLVER_RULE_JOB", SolverRuleinfo::SOLVER_RULE_JOB)
@@ -618,7 +624,13 @@ PYBIND11_MODULE(bindings, m)
         .value("SOLVER_RULE_DISTUPGRADE", SolverRuleinfo::SOLVER_RULE_DISTUPGRADE)
         .value("SOLVER_RULE_INFARCH", SolverRuleinfo::SOLVER_RULE_INFARCH)
         .value("SOLVER_RULE_CHOICE", SolverRuleinfo::SOLVER_RULE_CHOICE)
-        .value("SOLVER_RULE_LEARNT", SolverRuleinfo::SOLVER_RULE_LEARNT);
+        .value("SOLVER_RULE_LEARNT", SolverRuleinfo::SOLVER_RULE_LEARNT)
+        .value("SOLVER_RULE_BEST", SolverRuleinfo::SOLVER_RULE_BEST)
+        .value("SOLVER_RULE_YUMOBS", SolverRuleinfo::SOLVER_RULE_YUMOBS)
+        .value("SOLVER_RULE_RECOMMENDS", SolverRuleinfo::SOLVER_RULE_RECOMMENDS)
+        .value("SOLVER_RULE_BLACK", SolverRuleinfo::SOLVER_RULE_BLACK)
+        .value("SOLVER_RULE_STRICT_REPO_PRIORITY",
+               SolverRuleinfo::SOLVER_RULE_STRICT_REPO_PRIORITY);
 
     // INSTALL FLAGS
     m.attr("MAMBA_NO_DEPS") = MAMBA_NO_DEPS;
